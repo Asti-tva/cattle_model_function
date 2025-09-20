@@ -1,14 +1,12 @@
+# In api/index.py (Final Corrected Version)
 from flask import Flask, request, jsonify
-from gradio_client import Client
+from gradio_client import Client, handle_file # <-- Import handle_file
 import os
 
 app = Flask(__name__)
 
-# Get the Space name and token from Environment Variables
-# The gradio_client will automatically use the HF_API_TOKEN if it exists
 HF_SPACE_NAME = os.environ.get("HF_SPACE_NAME")
 
-# Initialize the client once when the app starts up
 try:
     if not HF_SPACE_NAME:
         raise ValueError("HF_SPACE_NAME environment variable is not set.")
@@ -25,18 +23,19 @@ def predict():
 
     if not request.json or 'image_url' not in request.json:
         return jsonify({"error": "Request must include 'image_url'."}), 400
-        
+
     image_url = request.json['image_url']
-    
+
     try:
-        # Use the client to make a blocking prediction call
+        # --- THIS IS THE FINAL FIX ---
+        # Use the handle_file function to correctly format the URL
         result = client.predict(
-            image=image_url,
+            image=handle_file(image_url), # <-- This is the change
             api_name="/predict"
         )
-        
-        # The result from the client is the direct output from our Gradio app's function
-        # The output is a dictionary of confidences, let's find the top one.
+        # --- END OF FIX ---
+
+        # The result is the dictionary from our Gradio app's function. Find the top prediction.
         top_breed = max(result, key=result.get)
         top_confidence = result[top_breed]
 
@@ -46,4 +45,5 @@ def predict():
         })
 
     except Exception as e:
-        return jsonify({"error": f"An error occurred during prediction: {str(e)}"}), 500
+        # The client library can raise specific errors, let's return a clean message
+        return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
