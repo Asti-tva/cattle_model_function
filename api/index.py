@@ -1,90 +1,46 @@
-# In api/index.py
-
 from flask import Flask, request, jsonify
-import torch
-from torchvision import transforms
-from transformers import ViTImageProcessor, ViTForImageClassification
-from PIL import Image
 import requests
-import io
+import os
 
 app = Flask(__name__)
 
-# --- MODEL LOADING ---
-# We load the model outside of the request functions.
-# This ensures the model is loaded only once when the server starts,
-# making predictions much faster.
-
-MODEL_PATH = 'cattle_breed_classifier_complete.pth' # IMPORTANT: Change this to your .pth file's name
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Load the entire model package
-try:
-    model_package = torch.load(MODEL_PATH, map_location=DEVICE)
-
-    # Extract components
-    CLASS_NAMES = model_package['class_names']
-    model_config = model_package['model_config']
-    
-    # Initialize model from Hugging Face
-    PROCESSOR = ViTImageProcessor.from_pretrained(model_config['model_name'])
-    MODEL = ViTForImageClassification.from_pretrained(
-        model_config['model_name'],
-        num_labels=model_config['num_classes'],
-        ignore_mismatched_sizes=True
-    )
-    
-    # Load your fine-tuned weights
-    MODEL.load_state_dict(model_package['model_state_dict'])
-    MODEL.to(DEVICE)
-    MODEL.eval()
-    print("Model loaded successfully.")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    MODEL = None
-
-# --- API ENDPOINT ---
+# Get your Hugging Face details from Vercel's Environment Variables
+HF_API_URL = os.environ.get("HF_API_URL")
+HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    if MODEL is None:
-        return jsonify({"error": "Model is not loaded"}), 500
+    # --- Error Checking ---
+    if not all([HF_API_URL, HF_API_TOKEN]):
+        return jsonify({"error": "Server configuration missing"}), 500
 
     if not request.json or 'image_url' not in request.json:
-        return jsonify({"error": "No image_url provided"}), 400
+        return jsonify({"error": "Request must include an 'image_url'"}), 400
 
     image_url = request.json['image_url']
 
     try:
-        # Download the image from the URL
-        response = requests.get(image_url)
-        response.raise_for_status() # Raise an exception for bad status codes
-        
-        # Open the image from the downloaded content
-        image = Image.open(io.BytesIO(response.content)).convert('RGB')
-        
-        # Preprocess for ViT (adapted from your script)
-        inputs = PROCESSOR(images=image, return_tensors="pt")
-        processed_image = inputs['pixel_values'].to(DEVICE)
-        
-        # Make prediction
-        with torch.no_grad():
-            outputs = MODEL(processed_image)
-            probabilities = torch.nn.functional.softmax(outputs.logits, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
-        
-        predicted_class = CLASS_NAMES[predicted.item()]
-        confidence_val = confidence.item()
-        
-        # Return the result as JSON
+        # 1. Download the image data from the URL provided by the frontend
+        image_response = requests.get(image_url)
+        image_response.raise_for_status()
+        image_data = image_response.content
+
+        # 2. Call the Hugging Face API, passing the secret token in the headers
+        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+        hf_response = requests.post(HF_API_URL, headers=headers, data=image_data)
+        hf_response.raise_for_status()
+
+        prediction_result = hf_response.json()
+
+        # 3. Extract the top prediction and format it for our frontend
+        top_prediction = prediction_result[0]
+
         return jsonify({
-            "predicted_breed": predicted_class,
-            "confidence_score": confidence_val
+            "predicted_breed": top_prediction.get('label'),
+            "confidence_score": top_prediction.get('score')
         })
 
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Error fetching image or calling Hugging Face API: {e}"}), 500
     except Exception as e:
-        print(f"Error during prediction: {e}")
-        return jsonify({"error": f"Failed to process image: {str(e)}"}), 500
-    
-if __name__ == '__main__':
-    app.run(debug=True)
+        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
