@@ -1,50 +1,49 @@
-# In api/index.py (Debug Version)
-import requests
-import json
-import os
 from flask import Flask, request, jsonify
+from gradio_client import Client
+import os
 
 app = Flask(__name__)
 
-HF_API_URL = os.environ.get("HF_API_URL")
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
+# Get the Space name and token from Environment Variables
+# The gradio_client will automatically use the HF_API_TOKEN if it exists
+HF_SPACE_NAME = os.environ.get("HF_SPACE_NAME")
+
+# Initialize the client once when the app starts up
+try:
+    if not HF_SPACE_NAME:
+        raise ValueError("HF_SPACE_NAME environment variable is not set.")
+    client = Client(HF_SPACE_NAME)
+    print("Successfully initialized Gradio client.")
+except Exception as e:
+    client = None
+    print(f"Error initializing Gradio client: {e}")
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    if not all([HF_API_URL, HF_API_TOKEN]):
-        return jsonify({"error": "Server configuration missing"}), 500
+    if client is None:
+        return jsonify({"error": "Gradio client is not available."}), 500
+
     if not request.json or 'image_url' not in request.json:
-        return jsonify({"error": "Request must include 'image_url'"}), 400
-
+        return jsonify({"error": "Request must include 'image_url'."}), 400
+        
     image_url = request.json['image_url']
-    payload = {"data": [{"path": image_url, "meta": {"_type": "gradio.FileData"}}]}
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-
+    
     try:
-        initial_response = requests.post(HF_API_URL, headers=headers, json=payload)
-        initial_response.raise_for_status()
-        event_id = initial_response.json().get("event_id")
+        # Use the client to make a blocking prediction call
+        result = client.predict(
+            image=image_url,
+            api_name="/predict"
+        )
+        
+        # The result from the client is the direct output from our Gradio app's function
+        # The output is a dictionary of confidences, let's find the top one.
+        top_breed = max(result, key=result.get)
+        top_confidence = result[top_breed]
 
-        if not event_id:
-            raise ValueError("Could not get a valid event_id from the API.")
-
-        stream_url = f"{HF_API_URL}/{event_id}"
-
-        with requests.get(stream_url, headers=headers, stream=True) as stream_response:
-            stream_response.raise_for_status()
-            for line in stream_response.iter_lines():
-                if line:
-                    decoded_line = line.decode('utf-8')
-                    if decoded_line.startswith('data:'):
-                        try:
-                            event_data = json.loads(decoded_line[5:])
-                            if event_data.get("msg") == "process_completed":
-                                # Return the entire successful output payload
-                                return jsonify(event_data.get("output"))
-                        except json.JSONDecodeError:
-                            continue
-
-        return jsonify({"error": "Stream ended without a final prediction."}), 504
+        return jsonify({
+            "predicted_breed": top_breed,
+            "confidence_score": top_confidence
+        })
 
     except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+        return jsonify({"error": f"An error occurred during prediction: {str(e)}"}), 500
