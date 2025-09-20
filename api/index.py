@@ -1,6 +1,6 @@
-# In api/index.py (Final Corrected Version)
+# In api/index.py (Returning Top 3)
 from flask import Flask, request, jsonify
-from gradio_client import Client, handle_file # <-- Import handle_file
+from gradio_client import Client, handle_file
 import os
 
 app = Flask(__name__)
@@ -27,23 +27,24 @@ def predict():
     image_url = request.json['image_url']
 
     try:
-        # --- THIS IS THE FINAL FIX ---
-        # Use the handle_file function to correctly format the URL
         result = client.predict(
-            image=handle_file(image_url), # <-- This is the change
+            image=handle_file(image_url),
             api_name="/predict"
         )
-        # --- END OF FIX ---
 
-        # The result is the dictionary from our Gradio app's function. Find the top prediction.
-        top_breed = max(result, key=result.get)
-        top_confidence = result[top_breed]
+        # --- THIS IS THE UPDATED PART ---
+        # The 'result' dictionary contains a 'confidences' list with the top 3 predictions.
+        # We will reformat it into a clean list for our API response.
 
-        return jsonify({
-            "predicted_breed": top_breed,
-            "confidence_score": top_confidence
-        })
+        predictions_list = result.get('confidences', [])
+
+        formatted_predictions = [
+            {"breed": item.get('label'), "score": item.get('confidence')}
+            for item in predictions_list
+        ]
+        # --- END OF UPDATE ---
+
+        return jsonify({"predictions": formatted_predictions})
 
     except Exception as e:
-        # The client library can raise specific errors, let's return a clean message
         return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
